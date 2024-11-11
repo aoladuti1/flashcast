@@ -1,13 +1,13 @@
 import datetime
+import math
 from typing import Callable, Literal, Iterable
 import typing
 import holidays
 import numpy as np
 import matplotlib.pyplot as plt
-import sklearn
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.base import BaseEstimator
 import pandas as pd
-import sklearn.preprocessing
 import torch
 import torch.nn as nn
 from torch.optim.optimizer import Optimizer
@@ -15,13 +15,33 @@ import torch.utils.data as data
 
 # Author: Antonio Oladuti
 # Min Python version: 3.10
-plt.style.use("dark_background")
 
-TRADING_MONTH = 22
+__all__ = [
+    "Magic",
+    "adam",
+    "df_new_historical_split",
+    "make_future_date_list",
+    "resolve_col_name",
+    "resolve_col_names",
+    "fill_nan_numerics",
+    "train_xy_split",
+    "gen_moves",
+    "model_fit",
+    "make_predictions",
+    "max_lookback_training_check",
+    "predict_futures",
+    "historical_validation",
+    "quick_visuals",
+    "aggregate_futures",
+    "higher_final_pred",
+    "save_model",
+    "load_model",
+    "TRADING_MONTH"
+]
+
+TRADING_MONTH = 21
 UK_hols = US_hols = CH_hols = None # lazy init
 MOVE_COL_EXT = "_UP"
-
-LOGGING = ["ALL", "FATAL", "ERROR", "WARN", "INFO", "DEBUG"]
 
 AGG_FUNC_DICT = {
     "mean": pd.DataFrame.mean,
@@ -43,12 +63,15 @@ AGG_FUNC_DICT = {
     "first": pd.DataFrame.first,
     "last": pd.DataFrame.last,
     "all": pd.DataFrame.all,
-    "any": pd.DataFrame.any }
+    "any": pd.DataFrame.any
+}
 
 # LSTM inputs a 3D tensor: [samples, time steps, features]
 
+plt.style.use("dark_background")
+
 class Magic(nn.Module):
-    """ Basic LSTM neural network """
+    """ Basic PyTorch LSTM neural network """
     def __init__(
             self, 
             n_features: int, 
@@ -284,7 +307,7 @@ def fill_nan_numerics(df: pd.DataFrame, val: int | float = 0) -> pd.DataFrame:
 
 def train_xy_split(
         data: torch.Tensor, 
-        lookback: int = 60, 
+        lookback: int, 
         sliding_window_divisor: int | None = None
         ) -> tuple[torch.Tensor, torch.Tensor]:
     """Take training data and create the X (samples) as a 3D tensor of shape
@@ -293,13 +316,12 @@ def train_xy_split(
 
     Args:
         data (torch.tensor): 2D tensor of training data
-        lookback (int, optional): 
+        lookback (int): 
             number of time steps stored in each X sample. 
-            Defaults to 60.
         sliding_window_divisor (int | None, optional):
             Divide the `lookback` by `sliding_window_divisor`
-            and jump (`lookback // sliding_window_divisor`) time steps 
-            per X and y sample entry in training. 
+            and jump (`max(lookback // sliding_window_divisor, 1)`)  
+            time steps per X and y sample entry in training. 
             If None, no adjustment is made, and the window slides by 1
             time step. Defaults to None.
 
@@ -310,7 +332,7 @@ def train_xy_split(
     if sliding_window_divisor is None:
         jumper = lookback
     else:
-        jumper = lookback // sliding_window_divisor
+        jumper = max(lookback // sliding_window_divisor, 1)
     for i in range(lookback, len(data), jumper):
         X.append(data[i - lookback : i, :])
         y.append(data[i])
@@ -398,8 +420,9 @@ def model_fit(
                 Defaults to True.
 
         callbacks_make_fn (Callable | None, optional): 
-            A zero-argument callable that, if provided, is called after each \
-                batch. If it returns True, training is interrupted. \
+            A one-argument callable that, if provided, is called after each \
+                batch with argument `model`. If it returns True, training is \
+                interrupted. \
                     Defaults to None.
 
         loss_criterion 
@@ -466,8 +489,8 @@ def make_predictions(
         model: torch.nn.Module,
         first_test_data: torch.Tensor | np.ndarray,
         target_col_index: int = 0,
-        n_forecasts: int = 1,
-        scaler: sklearn.base.BaseEstimator | None = None,
+        forecast_len: int = 1,
+        scaler: BaseEstimator | None = None,
         binary_classification: bool = False,
         binary_boundary: float = 0.5, # >=
         verbose: bool = False) -> tuple[torch.tensor, torch.tensor]:
@@ -487,7 +510,7 @@ def make_predictions(
             Index of the target column in the predictions for \
                 extracting target-specific results.
 
-        n_forecasts (int): 
+        forecast_len (int): 
             Number of future time steps to forecast.
 
         scaler (sklearn.base.BaseEstimator | None, optional): 
@@ -517,12 +540,12 @@ def make_predictions(
     feature_count = X_test.shape[2]
     all_predictions = []
     with torch.no_grad():
-        for i in range(n_forecasts):
+        for i in range(forecast_len):
             
             prediction = model(X_test.to(torch.float32))[
                 :, seq_len-1:seq_len, :]
             if verbose:
-                    print(f"Forecast [{i+1}/{n_forecasts}]: {prediction}")
+                    print(f"Forecast [{i+1}/{forecast_len}]: {prediction}")
             X_test = torch.cat((X_test, prediction), dim=1)[:, 1:, :]
             all_predictions.append(prediction)    
     all_pred_base = torch.stack(all_predictions).reshape(
@@ -533,11 +556,11 @@ def make_predictions(
     elif scaler is not None:
         try:
             all_pred = scaler.inverse_transform(all_pred_base.reshape(
-                    n_forecasts, feature_count))
+                    forecast_len, feature_count))
         except:
             all_pred = torch.tensor(
                     scaler.inverse_transform(all_pred.numpy().reshape(
-                    n_forecasts, feature_count)))
+                    forecast_len, feature_count)))
     else:
         all_pred = all_pred_base
     return (all_pred, 
@@ -558,20 +581,33 @@ def _gen_data_df(
         data_df = df.filter(_feature_cols)
     return fill_nan_numerics(data_df)
 
+def _max_lookback_check_err(max_lookback, lookback, sliding_window_divisor):
+    if lookback > max_lookback:
+        swd = 1 if sliding_window_divisor is None else sliding_window_divisor
+        og_lb = lookback
+        lookback = max_lookback
+        raise ValueError(
+            f"Lookback {og_lb} is too long for your "
+            f"sliding window {swd} to train normally.\n"
+            f"The highest acceptable lookback for this "
+            f"data is {max_lookback}.\n"
+            f"Lookback values are accepted if they are less than or equal to "
+            f"the result of a call to max_lookback_training_check(...).")
+
 def _predict_the_future(
         df: pd.DataFrame,
         model: torch.nn.Module,
         optimizer: Optimizer | None = None,
-        scaler: sklearn.base.BaseEstimator = MinMaxScaler(),
+        scaler: BaseEstimator = MinMaxScaler(),
         prepped_df: pd.DataFrame | None = None,
-        n_forecasts: int = 1,
+        forecast_len: int = 1,
         lookback: int = TRADING_MONTH,
         target_col: int | str = 0,
         feature_cols: list[str] | None = None,
         future_moves_mode: bool = False,
         move_cols: list[str] | None = None,
         sliding_window_divisor: int | None = None,
-        epochs: int = 250,
+        epochs: int = 100,
         batch_size: int = 8,
         callbacks_make_fn: Callable | None = None, # model is the arg
         ignore_hols: list[str] = [],
@@ -586,6 +622,9 @@ def _predict_the_future(
             future_moves_mode, 
             target_col, 
             feature_cols if move_cols is None else move_cols)
+    max_lookback = max_lookback_training_check(
+        len(data_df), sliding_window_divisor)
+    _max_lookback_check_err(max_lookback, lookback, sliding_window_divisor)
     scaled_data = torch.tensor(scaler.fit_transform(data_df))
     train_data, test_data = scaled_data[:-lookback], scaled_data[-lookback:]
     X, y = train_xy_split(train_data, lookback, sliding_window_divisor)
@@ -596,7 +635,7 @@ def _predict_the_future(
     target_col_str = resolve_col_name(data_df, target_col)
     target_col_index = data_df.columns.get_loc(target_col_str)
     fut_dates = make_future_date_list(
-        df, n_forecasts, ignore_hols, business_days_only)
+        df, forecast_len, ignore_hols, business_days_only)
     prediction_df = pd.DataFrame(columns=df.columns, index=fut_dates)
     train_len = train_data.shape[0]
     test_data = scaled_data[train_len : train_len + lookback]
@@ -604,11 +643,11 @@ def _predict_the_future(
         model, 
         test_data, 
         target_col_index, 
-        n_forecasts=n_forecasts, 
+        forecast_len=forecast_len, 
         scaler=scaler, 
         binary_classification=future_moves_mode,
         verbose=verbose)
-    for i in range(n_forecasts):
+    for i in range(forecast_len):
         for j in range(len(prediction_df.columns)):
             prediction_df.iloc[i, j] = all_predictions[i, j]
     if return_only_target_cols:
@@ -617,20 +656,46 @@ def _predict_the_future(
             prediction_df.iloc[:, target_col_index : target_col_index + 1])
     else:
         return prediction_df
+    
+def max_lookback_training_check(
+        data_length: int, sliding_window_divisor: int) -> int:
+    """
+    Calculate the maximum lookback period allowed for training, based on 
+    the length of the data and the sliding window divisor.
+
+    Args:
+        data_length (int): The total number of data points available.
+        sliding_window_divisor (int): A divisor that adjusts the sliding 
+            window length. Higher values of this divisor decrease the 
+            allowed lookback period.
+
+    Returns:
+        int: The maximum lookback period for training, ensuring that 
+            sufficient data remains for effective sliding window sampling.
+
+    Notes:
+        - This function computes the maximum acceptable lookback as a 
+          function of `data_length` and `sliding_window_divisor`. 
+          It is calculated as:
+          `ceil(data_length * sliding_window_divisor / ((2 * 
+          sliding_window_divisor) + 1)) - 1`.
+    """
+    swd = sliding_window_divisor
+    return (math.ceil(data_length * swd / ((2 * swd) + 1)))  - 1
 
 def predict_futures(
         df: pd.DataFrame,
         models: list[torch.nn.Module] | torch.nn.Module,
         optimizer: list[Optimizer] | Optimizer | None = None,
-        scaler: sklearn.base.BaseEstimator = MinMaxScaler(),
-        n_forecasts: int = 1,
-        lookback: list[int] | np.ndarray | int = [TRADING_MONTH],
+        scalers: list[BaseEstimator] | BaseEstimator = [MinMaxScaler()],
+        forecast_len: int = 1,
+        lookbacks: list[int] | np.ndarray | int = [TRADING_MONTH],
         future_moves_mode: bool = False,
         target_col: int | str = 0,
         feature_cols: list[str|None] | str | None = None,
         move_cols: list[str|None] | str | None = None,
         sliding_window_divisor: list[int] | np.ndarray | int | None = None,
-        epochs: list[int] | np.ndarray | int = [250],
+        epochs: list[int] | np.ndarray | int = [100],
         batch_size: list[int] | np.ndarray | int = [8],
         callbacks_make_fn: Callable | None = None, # zero arg
         ignore_hols: list[list[str]] = [[]],
@@ -662,17 +727,23 @@ def predict_futures(
             optimizer (Adam) is used. Can be a single optimizer or a \
             list of optimizers corresponding to each model. Defaults to None.
 
-        scaler (sklearn.base.BaseEstimator, optional): 
-            Sklearn scaler used to normalize the data. \
-            Defaults to MinMaxScaler().
+        scalers (list[BaseEstimator] | BaseEstimator, optional): 
+            Sklearn scalers (or equivalent) used to normalize the data. \
+            Data is transformed for prediction and then inverse-transformed \
+            upon output. Can be one or more scalers. \
+            Defaults to [MinMaxScaler()].
 
-        n_forecasts (int, optional): 
+        forecast_len (int, optional): 
             The number of future time steps to predict. Defaults to 1.
 
-        lookback (list[int] | np.ndarray | int, optional): 
+        lookbacks (list[int] | np.ndarray | int, optional): 
             Lookback period(s) for each model, determining the number \
             of past time steps to consider. \
+            If larger than `len(df)`, it's set to 1.
             Can be a single integer or a list/array of integers. 
+            No lookback may exceed the limit relative to each corresponding 
+            each sliding window for this data, which can be checked with 
+            a call to `max_lookback_training_check(...)`.
             Defaults to `[TRADING_MONTH]`.     
 
         future_moves_mode (bool, optional): 
@@ -705,17 +776,18 @@ def predict_futures(
         epochs (list[int] | np.ndarray | int, optional): 
             Number of training epochs for each model. \
             Can be a single integer or a list/array of integers. 
-            Defaults to 250.
+            Defaults to [100].
 
         batch_size (list[int] | np.ndarray | int, optional): 
             Batch size for training each model. \
             Can be a single integer or a list/array of integers. \
-            Defaults to 8.
+            Defaults to [8].
 
         callbacks_make_fn (Callable | None, optional): 
-            A zero-argument callable that returns callbacks \
-            for the training process, if needed. \
-            If None, no callbacks are used. Defaults to None.
+            A one-argument callable that, if provided, is called after each \
+            training batch with the current model entry in `models` as the \
+            argument. If it returns True, training is interrupted. \
+                Defaults to None.
 
         ignore_hols (list[list[str]], optional): 
             List of holiday dates to ignore, per model. \
@@ -740,6 +812,9 @@ def predict_futures(
         parameters that can vary by model. \
         If a parameter is specified as a single value or a shorter list, \
         it is automatically expanded to match the number of models.
+        - **Large Lookback**: For large `lookback` values, see the maximum 
+        acceptable value (relative to your data and sliding window divisor)
+        by calling `max_lookback_training_check(...)`.
     """
     if not isinstance(models, list):
         models = [models]
@@ -758,9 +833,10 @@ def predict_futures(
     for i in range(n_models):
         if vect_optimizer[i] is None:
             vect_optimizer[i] = adam(models[i])
+    vect_scalers = _vect(scalers, n_models)
     vect_feature_cols = _vect(feature_cols, n_models)
     vect_move_cols = _vect(move_cols, n_models)
-    vect_lookback = _vect(lookback, n_models)
+    vect_lookbacks = _vect(lookbacks, n_models)
     vect_sliding_window_divisor = _vect(sliding_window_divisor, n_models)
     vect_epochs = _vect(epochs, n_models)
     vect_batch_size = _vect(batch_size, n_models)
@@ -771,10 +847,10 @@ def predict_futures(
                 df=df,
                 model=models[i],
                 optimizer=vect_optimizer[i],
-                scaler=scaler,
+                scaler=vect_scalers[i],
                 prepped_df=data_df,
-                n_forecasts=n_forecasts,
-                lookback=vect_lookback[i],
+                forecast_len=forecast_len,
+                lookback=vect_lookbacks[i],
                 target_col=target_col,
                 feature_cols=vect_feature_cols[i],
                 future_moves_mode=future_moves_mode,
@@ -793,21 +869,21 @@ def historical_validation(
         df: pd.DataFrame,
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
-        scaler: sklearn.base.BaseEstimator = MinMaxScaler(),
+        scaler: BaseEstimator = MinMaxScaler(),
         df_steps_into_past: int = TRADING_MONTH * 3,
         target_col: int | str = 0,
         feature_cols: list[str] | None = None,
         future_moves_mode: bool = False,
         lookback: int = TRADING_MONTH * 2,
-        forecast_len: int = 1,
-        sliding_lookback_divisor: int | None = None,
-        epochs: int = 250,
+        prediction_len: int = 1,
+        sliding_window_divisor: int | None = None,
+        epochs: int = 100,
         return_only_target_col: bool = True,
         verbose: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Validate a predictive model by generating predictions \
-    against historical data. There will be `forecast_len` \
+    against historical data. There will be `prediction_len` \
     time steps worth of predictions at each unskipped index, and \
-    `forecast_len` number of indices in `df` will be skipped per forecast.
+    `prediction_len` number of indices in `df` will be skipped per forecast.\n
     Returns a (predictions, reality) tuple of DataFrames.
 
     Args:
@@ -837,7 +913,7 @@ def historical_validation(
         lookback (int, optional): Lookback period for each input sequence. \
             Defaults to TRADING_MONTH * 2.
 
-        forecast_len (int, optional): Number of time steps to predict \
+        prediction_len (int, optional): Number of time steps to predict \
             in each forecast step. Defaults to 1.
 
         sliding_window_divisor 
@@ -848,7 +924,7 @@ def historical_validation(
             If None, no adjustment is applied, \
             and the window slides by 1 time step. Defaults to None.
 
-        epochs (int, optional): Number of training epochs. Defaults to 250.
+        epochs (int, optional): Number of training epochs. Defaults to 100.
 
         return_only_target_col (bool, optional): 
             If True, only return the target column in \
@@ -864,11 +940,16 @@ def historical_validation(
             values for comparison.
 
     Raises:
-        ValueError: If `df_steps_into_past` is less than `lookback`.
+        ValueError: If `df_steps_into_past` is less than `lookback`, or 
+            if `lookback` is greater than the result of a call to 
+            `max_lookback_training_check(...)`
 
     Notes:
         - **Visualization**: To easily visualize the results of this function,
         you can call `quick_visuals(historical_validation(<<your args>>))`
+        - **Large Lookback**: For large `lookback` values, see the maximum 
+        acceptable value (relative to your data and sliding window divisor) 
+        by calling `max_lookback_training_check(...)`.
     """
     if (df_steps_into_past < lookback):
         raise ValueError("df_steps_into_past must be >= lookback")
@@ -878,12 +959,15 @@ def historical_validation(
         data_df = gen_moves(df, move_cols=_feature_cols)
     else:
         data_df = df.filter(_feature_cols)
+    max_lookback = max_lookback_training_check(
+        len(data_df), sliding_window_divisor)
+    _max_lookback_check_err(max_lookback, lookback, sliding_window_divisor)
     data_df = fill_nan_numerics(data_df)
     scaled_data = torch.tensor(scaler.fit_transform(data_df))
     train_val_wall = lookback + df_steps_into_past
     val_df = data_df[-(train_val_wall):]
     train_data = scaled_data[:-(train_val_wall)]
-    X, y = train_xy_split(train_data, lookback, sliding_lookback_divisor)
+    X, y = train_xy_split(train_data, lookback, sliding_window_divisor)
     model = model_fit(model, X, y, epochs, optimizer, evaluate=True)
     if not future_moves_mode:
         target_col_str_pred = target_col_str_past
@@ -894,7 +978,7 @@ def historical_validation(
     prediction_df = pd.DataFrame(
         columns=val_df.columns,
         index=val_df.index[-df_steps_into_past:])
-    for i in range(0, df_steps_into_past, forecast_len):
+    for i in range(0, df_steps_into_past, prediction_len):
         train_len = train_data.shape[0]
         test_data = scaled_data[
                         train_len + i : train_len + lookback + i]
@@ -902,12 +986,12 @@ def historical_validation(
             model, 
             test_data, 
             target_col_index, 
-            n_forecasts=forecast_len, 
+            forecast_len=prediction_len, 
             scaler=scaler,
             binary_classification=future_moves_mode,
             verbose=verbose)
         for j in range(len(prediction_df.columns)):
-            for n in range(forecast_len):
+            for n in range(prediction_len):
                 if i + n < df_steps_into_past:
                     prediction_df.iloc[i + n, j] = all_predictions[n, j]
     retloc_first = len(val_df) - df_steps_into_past
@@ -1033,7 +1117,7 @@ def aggregate_futures(
         if tup_access:
             pred = pred[0]
         pred_list.append(pred)
-    if not isinstance(method, str) is not None:
+    if not isinstance(method, str):
         return method(pd.concat(pred_list, axis=1))
     elif method not in AGG_FUNC_DICT.keys():
         raise ValueError(f"Aggregate Method {method} not supported. "
