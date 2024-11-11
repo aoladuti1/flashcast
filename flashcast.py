@@ -253,6 +253,9 @@ def resolve_col_name(df: pd.DataFrame, col_index_or_name) -> str:
         df (pd.DataFrame): DataFrame
         col_index_or_name: column identifier
 
+    Raises:
+        KeyError: if the column doesn't exist
+
     Returns:
         str: returned column name
     """
@@ -273,8 +276,11 @@ def resolve_col_names(
         df (pd.DataFrame): DataFrame
         cols (list | pd.Index | str | int): column identifiers
 
+    Raises:
+        KeyError: if a column doesn't exist
+
     Returns:
-        list[str] | str: returned column names
+        list[str]: returned column names
     """
     if isinstance(cols, pd.Index):
         _cols = cols.to_list()
