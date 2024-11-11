@@ -9,7 +9,7 @@ This module provides a programmer tool for prediction with RNNs. It is ideal for
   
 -**Data Processing**: Prepares features, handles holidays, splits data, and fills missing values for robustness.
 
--**Model Training**: Supports training with gradient clipping, custom loss functions, batch handling, and evaluation options.
+-**Model Training**: Supports training with sliding lookback windows (sampling), gradient clipping, custom loss functions, batch handling, and evaluation options.
 
 -**Prediction & Forecasting**: Allows forecasting with options for holiday filtering, binary classification, and multiple model support.
 
@@ -26,4 +26,4 @@ This module provides a programmer tool for prediction with RNNs. It is ideal for
 
 ## Example Usage
 
-Can be found in the demo Jupyter notebook: `flashcaster_demo.ipynb`.
+Can be found in the demo Jupyter notebook: `flashcast_demo.ipynb`.
