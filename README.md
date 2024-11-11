@@ -1,26 +1,28 @@
 
-# PyTorch LSTM Time-Series Forecasting Tool
+# FlashCast: RNN Forecasting with Time Series in Mind
 
-This module provides an LSTM-based tool for (time-series) prediction and is especially suited for financial and trading data.
+This module provides a programmer tool for prediction with RNNs. It is ideal for those who want to experiment on time series data with a PyTorch abstraction.
 
-## Key Features
+## Major Features
 
-1. **LSTM Model**: A basic customizable LSTM neural network for time-series forecasting.
+-**LSTM Model**: The Magic class is a basic Torch LSTM neural network for time series forecasting.
   
-2. **Data Processing**: Prepares features, handles holidays, splits data, and fills missing values for robust data handling.
+-**Data Processing**: Prepares features, handles holidays, splits data, and fills missing values for robustness.
 
-3. **Model Training**: Supports training with gradient clipping, custom loss functions, batch handling, and evaluation options.
+-**Model Training**: Supports training with gradient clipping, custom loss functions, batch handling, and evaluation options.
 
-4. **Prediction & Forecasting**: Allows forecasting with options for holiday filtering, binary classification, and multiple model support.
+-**Prediction & Forecasting**: Allows forecasting with options for holiday filtering, binary classification, and multiple model support.
 
-5. **Evaluation & Visualization**: Includes validation, prediction aggregation, and visualization for model evaluation.
+-**Evaluation & Visualization**: Includes historical validation, visualization, and mutliple prediction configurations + output aggregation.
 
-6. **Utilities**: Provides functions to save, load, and interpret models effectively.
+-**Utilities**: Provides functions to save, load, and interpret models.
+
+-**Broadcasting**: When providing multiple configurations for prediction on a dataset, they don't have to be fully specified. One-dimensional or single-entry values in the configuration will be broadcast to all configurations.
 
 ## Requirements
 
 - **Python**: 3.10+
-- **Dependencies**: `torch`, `pandas`, `numpy`, `scikit-learn`, `matplotlib`, `holidays`
+- **Dependencies**: Run ```pip install -r requirements.txt``` in a terminal pointed to the requirements.txt directory
 
 ## Example Usage
 
